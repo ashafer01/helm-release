@@ -1,0 +1,194 @@
+#!/bin/bash
+#
+# helm-release Simplified Helm Deployment tool
+#
+# Copyright 2020 ashafer01
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy of
+# this software and associated documentation files (the "Software"), to deal in
+# the Software without restriction, including without limitation the rights to
+# use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+# of the Software, and to permit persons to whom the Software is furnished to do
+# so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+error() {
+    echo "$1" >&2
+}
+
+check() {
+    [[ $1 -ne 0 ]] && error "$2" && exit 1
+}
+
+check_release_info() {
+    if [[ ! -e release-info ]]; then
+        error "release-info file does not exist"
+        error "Use \`$0 init\` to set up a new release"
+        exit 1
+    fi
+}
+
+pull_chart() {
+    if [[ "$VERSION" == "latest" ]]; then
+        VERSION=""
+    fi
+    helm pull "$REPO_NAME/$CHART" \
+        --untar \
+        --untardir .release \
+        --version "$VERSION"
+    return $?
+}
+
+render_release() {
+    # Render the current release of the chart
+    echo 'Rendering chart ...'
+    helm template "$RELEASE_NAME" "./.release/$CHART/" \
+        -f values.y*ml \
+        --namespace "$NAMESPACE" \
+      > rendered.yaml
+    check $? 'Failed to render release'
+    echo "Release has been rendered in rendered.yaml"
+    echo "Deploy it to the cluster by running:"
+    echo
+    echo "   kubectl apply -f rendered.yaml"
+    echo
+    echo "Enjoy!"
+}
+
+which jq >/dev/null 2>&1
+if [[ $? -ne 0 ]]; then
+    error "Command jq not found on PATH."
+    error "\`brew/apt/yum/... install jq\` will usually work"
+    exit 1
+fi
+
+case "$1" in
+"init")
+    if [[ -e release-info ]]; then
+        error "release-info file already exists, cannot re-init"
+        error "Use \`$0 upgrade\` to update the chart"
+        exit 1
+    else
+        # Set up initial release-info template file
+        cat <<EOT > release-info
+# Metadata for a single release of a Helm chart
+
+# Required. Name for this individual release of the chart
+# If you use multiple environments for example it may be desirable to
+# add the environment name to the release name
+RELEASE_NAME=""
+
+# Required. The local canonical name for the helm repository hosting
+# this chart. First argument to \`helm repo add\`
+REPO_NAME=""
+
+# Required. The base URL for the helm repository hosting this chart
+# Second argument to \`helm repo add\`
+REPO=""
+
+# Required. The chart name within the above repo
+CHART=""
+
+# Required. The namespace to use for K8s resources for this release
+NAMESPACE="default"
+
+# Optional. Pin the chart version
+# **Leave empty for unpinned/latest**
+VERSION=""
+EOT
+        check $? 'Failed to write release-info template'
+        echo 'Wrote out initial template release-info file'
+        echo "Opening with $EDITOR"
+        "$EDITOR" release-info
+        check $? "$EDITOR exited non-zero"
+    fi
+
+    . release-info
+
+    # Validate required release-info variables are non-empty
+    [[ -z "$RELEASE_NAME" ]] \
+    || [[ -z "$REPO_NAME" ]] \
+    || [[ -z "$REPO" ]] \
+    || [[ -z "$CHART" ]] \
+    || [[ -z "$NAMESPACE" ]] \
+    && error "Missing required value(s) in release-info" \
+    && exit 1
+
+    echo -n "Using helm: "
+    which helm
+
+    # Ensure helm repo is added
+    real_repo_url="$(helm repo list -o json | jq -er '.[] | select(.name == "'"$REPO_NAME"'") | .url')"
+    if [[ $? -ne 0 ]]; then
+        helm repo add "$REPO_NAME" "$REPO"
+        check $? 'Failed to add new Helm repo'
+    else
+        echo "Using existing $REPO_NAME"
+        if [[ "$real_repo_url" != "$REPO" ]]; then
+            echo "Note: The existing repo URL differs from release-info"
+            echo
+            echo "        Existing URL: $real_repo_url"
+            echo "   release-info REPO: $REPO"
+        fi
+    fi
+    helm repo update
+    check $? 'helm repo update failed'
+
+    # Cache the chart we're using
+    mkdir -p .release
+    pull_chart
+    check $? 'Failed to pull Helm chart'
+
+    # Get and edit the default values.yaml
+    compgen -G 'values.y*ml' >/dev/null
+    if [[ $? -ne 0 ]]; then
+        cp ".release/$CHART/"values.y*ml .
+        check $? 'Failed to copy default values from chart'
+        echo "Copied default $(echo values.y*ml) from chart"
+        echo "Opening with $EDITOR"
+        "$EDITOR" values.y*ml
+        check $? "$EDITOR exited non-zero"
+    else
+        error "A values file already exists in this directory: $(echo values.y*ml)"
+        error "Aborting init"
+        exit 1
+    fi
+
+    render_release
+    ;;
+"upgrade")
+    check_release_info
+    . release-info
+    mv .release .release-old
+    check $? 'Failed to stash previous release'
+    mkdir .release
+    check $? 'Failed to create .release directory'
+    helm repo update
+    check $? 'helm repo update failed'
+    pull_chart
+    if [[ $? -ne 0 ]]; then
+        error 'Failed to pull Helm chart upgrade'
+        error 'Rolling back local chart'
+        mv .release-old .release
+        check $? 'Failed to roll back, bailing.'
+    else
+        # TODO merge values.yaml files
+        render_release
+    fi
+    ;;
+"refresh")
+    check_release_info
+    . release-info
+    render_release
+    ;;
+esac
