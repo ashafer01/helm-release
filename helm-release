@@ -177,6 +177,17 @@ EOT
 return $?
 }
 
+check_editor() {
+    if [[ -z "$EDITOR" ]]; then
+        error "EDITOR environment variable must be set and refer to an executable file"
+        exit 1
+    fi
+    if [[ ! -x "$EDITOR" ]]; then
+        error "EDITOR environment variable ($EDITOR) does not exist or is not executable"
+        exit 1
+    fi
+}
+
 check_deps() {
     have_all_deps="yes"
     have_helm="yes"
@@ -250,6 +261,8 @@ check_deps() {
 case "$1" in
 "init")
     check_deps
+    check_editor
+
     if [[ -e "$info_fn" ]]; then
         echo "$info_fn file already exists, leaving it alone"
     else
