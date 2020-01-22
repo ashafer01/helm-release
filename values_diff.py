@@ -3,6 +3,7 @@ import yaml
 from glob import glob
 from jsonpatch import JsonPatch
 
+
 def yaml_display_format(obj, indent=0, prefix=''):
     formatted = yaml.dump(obj, default_flow_style=False).rstrip('\n.')
     if indent:

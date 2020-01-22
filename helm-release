@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# helm-release Simplified Helm Deployment tool
+# helm-release Simplified Helm-chart Deployment tool
 #
 # Copyright 2020 ashafer01
 #
@@ -22,10 +22,42 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+version="0.1.0"
+
+help_heading() {
+    echo "helm-release $version -- Simplified Helm-chart deployment tool"
+    echo 'https://github.com/ashafer01/helm-release'
+}
+
+usage() {
+    echo 'Usage:'
+    echo '   helm-release init     -- Set up a new release of a'
+    echo '                            Helm chart (interactive)'
+    echo '   helm-release upgrade  -- Pull in latest upstream version of the chart'
+    echo '                            and carry out a guided upgrade (interactive)'
+    echo '   helm-release refresh  -- Render the release taking in updates to'
+    echo '                            values and customizations (unattended)'
+    echo '   helm-release apply    -- Use kubectl to deploy the release (unattended)'
+    echo
+    echo 'Informational:'
+    echo '   helm-release help     -- Full help output'
+    echo '   helm-release usage    -- Just output this usage table'
+    echo '   helm-release version  -- Check deps and print the version'
+}
+
 info_fn="release-info"
-intermediate_fn="intermediate.yaml"
-release_fn="release.yaml"
+release_dir=".release"
+intermediate_fn="$release_dir/intermediate.yaml"
+release_fn="$release_dir/release.yaml"
 kustomize_fn="kustomization.yaml"
+
+# set up debugging handle initially redirected to null
+exec 3>/dev/null
+
+if [[ -n "$DEBUG" ]]; then
+    # redirect debugging handle to stderr so the user can see it
+    exec 3>&2
+fi
 
 error() {
     echo "$1" >&2
@@ -38,7 +70,7 @@ check() {
 check_release_info() {
     if [[ ! -e "$info_fn" ]]; then
         error "$info_fn file does not exist"
-        error "Use \`$0 init\` to set up a new release"
+        error 'Use `helm-release init` to set up a new release'
         exit 1
     fi
 }
@@ -68,27 +100,38 @@ CHART=""
 NAMESPACE="default"
 
 # Optional. Pin the chart version
-# **Leave empty for unpinned/latest**
+# The string "latest" and an empty string "" will both leave
+# the version unpinned.
 VERSION=""
 EOT
 return $?
 }
 
 pull_chart() {
+    helm repo update
+    check $? 'helm repo update failed'
+    mkdir -p "$release_dir"
     if [[ "$VERSION" == "latest" ]]; then
         VERSION=""
     fi
-    helm pull "$REPO_NAME/$CHART" \
-        --untar \
-        --untardir .release \
-        --version "$VERSION"
-    return $?
+    if [[ -e "$release_dir/$CHART" ]]; then
+        echo 'Chart directory already exists, not pulling chart'
+    else
+        helm pull "$REPO_NAME/$CHART" \
+            --untar \
+            --untardir "$release_dir" \
+            --version "$VERSION"
+        return $?
+    fi
 }
 
 render_release() {
+    compgen -G 'values.y*ml' >/dev/null
+    check $? 'No values.yaml file found in current directory'
+
     # Render the current release of the chart
-    echo 'Rendering chart ...'
-    helm template "$RELEASE_NAME" "./.release/$CHART/" \
+    echo 'Rendering intermediate ...'
+    helm template "$RELEASE_NAME" "./$release_dir/$CHART/" \
         -f values.y*ml \
         --namespace "$NAMESPACE" \
       > "$intermediate_fn"
@@ -126,7 +169,7 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
 # This is the intermediate file generated during helm-release rendering
-- intermediate.yaml
+- $intermediate_fn
 
 # Add transformers/generators here
 # https://github.com/kubernetes-sigs/kustomize/blob/master/docs/fields.md
@@ -134,84 +177,81 @@ EOT
 return $?
 }
 
-have_all_deps="yes"
+check_deps() {
+    have_all_deps="yes"
+    have_helm="yes"
 
-# set up debugging handle initially redirected to null
-exec 3>/dev/null
+    echo -n 'Checking jq: ' >&3
+    which jq >&3 2>&1
+    if [[ $? -ne 0 ]]; then
+        error 'Command jq not found on PATH'
+        error '   `brew/apt/yum/... install jq` will usually work'
+        have_all_deps="no"
+    fi
 
-if [[ -n "$DEBUG" ]]; then
-    # redirect debugging handle to stderr so the user can see it
-    exec 3>&2
-fi
+    echo -n 'Checking helm: ' >&3
+    which helm >&3 2>&1
+    if [[ $? -ne 0 ]]; then
+        error 'Command helm not found on PATH'
+        error '   `brew install helm` or check:'
+        error '   https://github.com/helm/helm#install'
+        have_all_deps="no"
+        have_helm="no"
+    fi
 
-echo -n 'Checking jq: ' >&3
-which jq >&3
-if [[ $? -ne 0 ]]; then
-    error 'Command jq not found on PATH'
-    error '`brew/apt/yum/... install jq` will usually work'
-    have_all_deps="no"
-fi
+    echo -n 'Checking kustomize: ' >&3
+    which kustomize >&3 2>&1
+    if [[ $? -ne 0 ]]; then
+        error 'Command kustomize not found on PATH'
+        error '   `brew install kustomize` or check:'
+        error '   https://github.com/kubernetes-sigs/kustomize/blob/master/docs/INSTALL.md'
+        have_all_deps="no"
+    fi
 
-echo -n 'Checking helm: ' >&3
-which helm >&3
-if [[ $? -ne 0 ]]; then
-    error 'Command helm not found on PATH'
-    error '`brew install helm` or check:'
-    error 'https://github.com/helm/helm#install'
-    have_all_deps="no"
-fi
+    echo -n 'Checking kubectl: ' >&3
+    which kubectl >&3 2>&1
+    if [[ $? -ne 0 ]]; then
+        error 'Command kubectl not found on PATH'
+        error '   `brew install kubectl` or check:'
+        error '   https://kubernetes.io/docs/tasks/tools/install-kubectl/'
+        have_all_deps="no"
+    fi
 
-echo -n 'Checking kustomize: ' >&3
-which kustomize >&3
-if [[ $? -ne 0 ]]; then
-    error 'Command kustomize not found on PATH'
-    error '`brew install kustomize` or check:'
-    error 'https://github.com/kubernetes-sigs/kustomize/blob/master/docs/INSTALL.md'
-    have_all_deps="no"
-fi
+    if [[ "$have_helm" == "yes" ]]; then
+        helm_version="$(helm version --short -c | sed 's/^Client: //')"
+        helm_major_version="${helm_version:0:2}"
+        case "$helm_major_version" in
+        "v2")
+            echo
+            echo 'Warning: helm-release was built for Helm 3.'
+            echo 'Only a small subset of Helm features are used,'
+            echo 'though, and it will probably work fine on 2.'
+            echo 'Many charts claiming lack of Helm 3 support will'
+            echo 'work with helm-release and Helm 3.'
+            echo
+            ;;
+        "v3")
+            echo 'Helm 3 detected! (this is a good thing)' >&3
+            echo >&3
+            ;;
+        *)
+            error "Helm version $helm_version is unknown/unhandled"
+            error 'Please use Helm 3 if possible; Helm 2 will probably work, too'
+            exit 1
+        esac
+    fi
 
-echo -n 'Checking kubectl: ' >&3
-which kubectl >&3
-if [[ $? -ne 0 ]]; then
-    error 'Command kubectl not found on PATH'
-    error '`brew install kubectl` or check:'
-    error 'https://kubernetes.io/docs/tasks/tools/install-kubectl/'
-    have_all_deps="no"
-fi
-
-if [[ "$have_all_deps" == "no" ]]; then
-    error 'Cannot continue without above commands available on the PATH'
-    exit 1
-fi
-
-helm_version="$(helm version --short -c | sed 's/^Client: //')"
-helm_major_version="${helm_version:0:2}"
-case "$helm_major_version" in
-"v2")
-    echo
-    echo 'Warning: helm-release was built for Helm 3.'
-    echo 'Only a small subset of Helm features are used,'
-    echo 'though, and it will probably work fine on 2.'
-    echo 'Many charts claiming lack of Helm 3 support will'
-    echo 'work with helm-release and Helm 3.'
-    ;;
-"v3")
-    echo 'Helm 3 detected! (this is a good thing)' >&3
-    ;;
-*)
-    error "Helm version $helm_version is unknown/unhandled"
-    error 'Please use Helm 3 if possible; Helm 2 will probably work, too'
-    exit 1
-esac
-
-echo >&3
+    if [[ "$have_all_deps" == "no" ]]; then
+        error 'Cannot continue without above commands available on the PATH'
+        exit 1
+    fi
+}
 
 case "$1" in
 "init")
+    check_deps
     if [[ -e "$info_fn" ]]; then
-        error "$info_fn file already exists, cannot re-init"
-        error "Use \`$0 upgrade\` to update the chart"
-        exit 1
+        echo "$info_fn file already exists, leaving it alone"
     else
         # Set up initial release-info template file
         write_release_info_template
@@ -239,26 +279,23 @@ case "$1" in
         helm repo add "$REPO_NAME" "$REPO"
         check $? 'Failed to add new Helm repo'
     else
-        echo "Using existing $REPO_NAME"
+        echo "Using existing $REPO_NAME Helm repo"
         if [[ "$real_repo_url" != "$REPO" ]]; then
-            echo "Note: The existing repo URL differs from release-info"
-            echo
-            echo "        Existing URL: $real_repo_url"
-            echo "   release-info REPO: $REPO"
+            echo "Note: The existing repo URL differs from release-info" >&3
+            echo >&3
+            echo "        Existing URL: $real_repo_url" >&3
+            echo "   release-info REPO: $REPO" >&3
         fi
     fi
-    helm repo update
-    check $? 'helm repo update failed'
 
     # Cache the chart we're using
-    mkdir -p .release
     pull_chart
     check $? 'Failed to pull Helm chart'
 
     # Get and edit the default values.yaml
     compgen -G 'values.y*ml' >/dev/null
     if [[ $? -ne 0 ]]; then
-        cp ".release/$CHART/"values.y*ml .
+        cp "$release_dir/$CHART/"values.y*ml .
         check $? 'Failed to copy default values from chart'
         echo "Copied default $(echo values.y*ml) from chart"
         echo "Opening with $EDITOR"
@@ -274,6 +311,15 @@ case "$1" in
         write_kustomize_template
         check $? 'Failed to write kustomize template file'
         echo "Wrote $kustomize_fn for optional modification"
+        echo -n "Would you like to edit $kustomize_fn now? "
+        read prompt
+        if [[ "$prompt" =~ ^[yY] ]]; then
+            echo "Opening with $EDITOR"
+            "$EDITOR" "$kustomize_file"
+            check $? "$EDITOR exited non-zero"
+        else
+            echo "We'll leave the no-op kustomize in place"
+        fi
     else
         echo "A kustomization already exists in this directory: $(echo kustomization.y*ml)"
     fi
@@ -281,43 +327,99 @@ case "$1" in
     render_release
     ;;
 "upgrade")
+    check_deps
     check_release_info
     source "$info_fn"
-    mv .release .release-old
+    mv "$release_dir" "$release_dir-old"
     check $? 'Failed to stash previous release'
-    mkdir .release
-    check $? 'Failed to create .release directory'
-    helm repo update
-    check $? 'helm repo update failed'
     pull_chart
     if [[ $? -ne 0 ]]; then
         error 'Failed to pull Helm chart upgrade'
         error 'Rolling back local chart'
-        mv .release-old .release
+        mv "$release_dir-old" "$release_dir"
         check $? 'Failed to roll back, bailing.'
+        exit 1
     else
-        # TODO merge values.yaml files
+        # TODO guided upgrade
+        echo
+        echo 'WARNING: Guided upgrade feature is not yet implemented'
+        echo 'Rendering may fail without manually updating values.yaml'
+        echo
         render_release
+        rm -rf "$release_dir-old"
     fi
     ;;
 "refresh")
+    check_deps
     check_release_info
     source "$info_fn"
     render_release
     ;;
-"kustomize")
-    if [[ -e "$kustomize_fn" ]]; then
-        error "$kustomize_fn already exists"
-        exit 1
-    fi
-    write_kustomize_template
-    check $? 'Failed to write kustomize template file'
-    echo "Wrote $kustomize_fn"
-    ;;
 "apply")
+    check_deps
     kubectl apply -f "$release_fn"
     ;;
+"version")
+    echo "v$version -- helm-release Development"
+    echo >&3
+    check_deps
+    ;;
+"help")
+    help_heading
+    echo
+    usage
+    echo
+    echo 'Help topics:'
+    echo
+    echo '* Debugging'
+    echo
+    echo 'Set the DEBUG variable to get extra debugging output, e.g.:'
+    echo
+    echo '   DEBUG=yes helm-release version'
+    echo
+    echo '* Interactive editor'
+    echo
+    echo 'Note that the `init` subcommand makes frequent use of the'
+    echo "standard EDITOR environment variable. If you don't keep this"
+    echo 'set in your shell rc file, you can pass it in, e.g.:'
+    echo
+    echo '   EDITOR=/usr/bin/vim DEBUG=yes helm-release init'
+    echo
+    echo 'The editor that helm-release opens must be closed after you'
+    echo 'are finished editing the file for the init process to'
+    echo 'continue.'
+    echo
+    echo '* Re-init'
+    echo
+    echo 'The init command is idempotent. It will non-destructively'
+    echo 'ensure that all required files are in place, skipping over'
+    echo 'any that are already present. Note that init cannot'
+    echo 'validate files beyond their presence.'
+    echo
+    echo '* Dependencies'
+    echo
+    echo 'helm-release expects all of the following commands to be'
+    echo 'available on the PATH:'
+    echo '  - helm'
+    echo '  - kustomize'
+    echo '  - kubectl'
+    echo '  - jq'
+    echo
+    echo 'Homebrew users can install all of these with:'
+    echo
+    echo '   brew install helm kustomize kubectl jq'
+    echo
+    echo 'Other platforms will have different setup needs.'
+    echo 'helm-release checks for missing dependencies and will'
+    echo 'output a link with installation instructions.'
+    ;;
+"usage")
+    usage
+    ;;
 *)
-    echo 'Unknown subcommand'
+    help_heading
+    echo
+    error 'Unknown subcommand, see `helm-release help` for more info'
+    exit 1
     ;;
 esac
