@@ -22,6 +22,11 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+info_fn="release-info"
+intermediate_fn="intermediate.yaml"
+release_fn="release.yaml"
+kustomize_fn="kustomization.yaml"
+
 error() {
     echo "$1" >&2
 }
@@ -31,57 +36,17 @@ check() {
 }
 
 check_release_info() {
-    if [[ ! -e release-info ]]; then
-        error "release-info file does not exist"
+    if [[ ! -e "$info_fn" ]]; then
+        error "$info_fn file does not exist"
         error "Use \`$0 init\` to set up a new release"
         exit 1
     fi
 }
 
-pull_chart() {
-    if [[ "$VERSION" == "latest" ]]; then
-        VERSION=""
-    fi
-    helm pull "$REPO_NAME/$CHART" \
-        --untar \
-        --untardir .release \
-        --version "$VERSION"
-    return $?
-}
-
-render_release() {
-    # Render the current release of the chart
-    echo 'Rendering chart ...'
-    helm template "$RELEASE_NAME" "./.release/$CHART/" \
-        -f values.y*ml \
-        --namespace "$NAMESPACE" \
-      > rendered.yaml
-    check $? 'Failed to render release'
-    echo "Release has been rendered in rendered.yaml"
-    echo "Deploy it to the cluster by running:"
-    echo
-    echo "   kubectl apply -f rendered.yaml"
-    echo
-    echo "Enjoy!"
-}
-
-which jq >/dev/null 2>&1
-if [[ $? -ne 0 ]]; then
-    error "Command jq not found on PATH."
-    error "\`brew/apt/yum/... install jq\` will usually work"
-    exit 1
-fi
-
-case "$1" in
-"init")
-    if [[ -e release-info ]]; then
-        error "release-info file already exists, cannot re-init"
-        error "Use \`$0 upgrade\` to update the chart"
-        exit 1
-    else
-        # Set up initial release-info template file
-        cat <<EOT > release-info
-# Metadata for a single release of a Helm chart
+write_release_info_template() {
+cat <<EOT > "$info_fn"
+# This directory is managed by:
+# https://github.com/ashafer01/helm-release/
 
 # Required. Name for this individual release of the chart
 # If you use multiple environments for example it may be desirable to
@@ -106,14 +71,158 @@ NAMESPACE="default"
 # **Leave empty for unpinned/latest**
 VERSION=""
 EOT
-        check $? 'Failed to write release-info template'
-        echo 'Wrote out initial template release-info file'
+return $?
+}
+
+pull_chart() {
+    if [[ "$VERSION" == "latest" ]]; then
+        VERSION=""
+    fi
+    helm pull "$REPO_NAME/$CHART" \
+        --untar \
+        --untardir .release \
+        --version "$VERSION"
+    return $?
+}
+
+render_release() {
+    # Render the current release of the chart
+    echo 'Rendering chart ...'
+    helm template "$RELEASE_NAME" "./.release/$CHART/" \
+        -f values.y*ml \
+        --namespace "$NAMESPACE" \
+      > "$intermediate_fn"
+    check $? 'Failed to render values for release'
+    echo 'Successfully rendered intermediate with values'
+
+    compgen -G 'kustomization.y*ml' >/dev/null
+    if [[ $? -eq 0 ]]; then
+        echo 'Applying kustomization ...'
+        kustomize build \
+            --reorder "none" \
+          > "$release_fn"
+        check $? 'Failed to render kustomization'
+        echo 'Successfully rendered kustomization'
+    else
+        echo 'No kustomization found, nothing else to render'
+        cp "$intermediate_fn" "$release_fn"
+        check $? "Failed to copy $intermediate_fn to final location at $release_fn"
+    fi
+
+    echo
+    echo "Release has been rendered in $release_fn"
+    echo 'Deploy it to the cluster by running:'
+    echo
+    echo "     kubectl apply -f $release_fn"
+    echo 'OR'
+    echo '     helm-release apply'
+    echo
+    echo 'Enjoy!'
+}
+
+write_kustomize_template() {
+cat <<EOT > "$kustomize_fn"
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+# This is the intermediate file generated during helm-release rendering
+- intermediate.yaml
+
+# Add transformers/generators here
+# https://github.com/kubernetes-sigs/kustomize/blob/master/docs/fields.md
+EOT
+return $?
+}
+
+have_all_deps="yes"
+
+# set up debugging handle initially redirected to null
+exec 3>/dev/null
+
+if [[ -n "$DEBUG" ]]; then
+    # redirect debugging handle to stderr so the user can see it
+    exec 3>&2
+fi
+
+echo -n 'Checking jq: ' >&3
+which jq >&3
+if [[ $? -ne 0 ]]; then
+    error 'Command jq not found on PATH'
+    error '`brew/apt/yum/... install jq` will usually work'
+    have_all_deps="no"
+fi
+
+echo -n 'Checking helm: ' >&3
+which helm >&3
+if [[ $? -ne 0 ]]; then
+    error 'Command helm not found on PATH'
+    error '`brew install helm` or check:'
+    error 'https://github.com/helm/helm#install'
+    have_all_deps="no"
+fi
+
+echo -n 'Checking kustomize: ' >&3
+which kustomize >&3
+if [[ $? -ne 0 ]]; then
+    error 'Command kustomize not found on PATH'
+    error '`brew install kustomize` or check:'
+    error 'https://github.com/kubernetes-sigs/kustomize/blob/master/docs/INSTALL.md'
+    have_all_deps="no"
+fi
+
+echo -n 'Checking kubectl: ' >&3
+which kubectl >&3
+if [[ $? -ne 0 ]]; then
+    error 'Command kubectl not found on PATH'
+    error '`brew install kubectl` or check:'
+    error 'https://kubernetes.io/docs/tasks/tools/install-kubectl/'
+    have_all_deps="no"
+fi
+
+if [[ "$have_all_deps" == "no" ]]; then
+    error 'Cannot continue without above commands available on the PATH'
+    exit 1
+fi
+
+helm_version="$(helm version --short -c | sed 's/^Client: //')"
+helm_major_version="${helm_version:0:2}"
+case "$helm_major_version" in
+"v2")
+    echo
+    echo 'Warning: helm-release was built for Helm 3.'
+    echo 'Only a small subset of Helm features are used,'
+    echo 'though, and it will probably work fine on 2.'
+    echo 'Many charts claiming lack of Helm 3 support will'
+    echo 'work with helm-release and Helm 3.'
+    ;;
+"v3")
+    echo 'Helm 3 detected! (this is a good thing)' >&3
+    ;;
+*)
+    error "Helm version $helm_version is unknown/unhandled"
+    error 'Please use Helm 3 if possible; Helm 2 will probably work, too'
+    exit 1
+esac
+
+echo >&3
+
+case "$1" in
+"init")
+    if [[ -e "$info_fn" ]]; then
+        error "$info_fn file already exists, cannot re-init"
+        error "Use \`$0 upgrade\` to update the chart"
+        exit 1
+    else
+        # Set up initial release-info template file
+        write_release_info_template
+        check $? "Failed to write $info_fn template"
+        echo "Wrote out initial template $info_fn file"
         echo "Opening with $EDITOR"
-        "$EDITOR" release-info
+        "$EDITOR" "$info_fn"
         check $? "$EDITOR exited non-zero"
     fi
 
-    . release-info
+    source "$info_fn"
 
     # Validate required release-info variables are non-empty
     [[ -z "$RELEASE_NAME" ]] \
@@ -123,9 +232,6 @@ EOT
     || [[ -z "$NAMESPACE" ]] \
     && error "Missing required value(s) in release-info" \
     && exit 1
-
-    echo -n "Using helm: "
-    which helm
 
     # Ensure helm repo is added
     real_repo_url="$(helm repo list -o json | jq -er '.[] | select(.name == "'"$REPO_NAME"'") | .url')"
@@ -159,16 +265,24 @@ EOT
         "$EDITOR" values.y*ml
         check $? "$EDITOR exited non-zero"
     else
-        error "A values file already exists in this directory: $(echo values.y*ml)"
-        error "Aborting init"
-        exit 1
+        echo "A values file already exists in this directory: $(echo values.y*ml)"
+    fi
+
+    # Write a kustomize template
+    compgen -G 'kustomization.y*ml' >/dev/null
+    if [[ $? -ne 0 ]]; then
+        write_kustomize_template
+        check $? 'Failed to write kustomize template file'
+        echo "Wrote $kustomize_fn for optional modification"
+    else
+        echo "A kustomization already exists in this directory: $(echo kustomization.y*ml)"
     fi
 
     render_release
     ;;
 "upgrade")
     check_release_info
-    . release-info
+    source "$info_fn"
     mv .release .release-old
     check $? 'Failed to stash previous release'
     mkdir .release
@@ -188,7 +302,22 @@ EOT
     ;;
 "refresh")
     check_release_info
-    . release-info
+    source "$info_fn"
     render_release
+    ;;
+"kustomize")
+    if [[ -e "$kustomize_fn" ]]; then
+        error "$kustomize_fn already exists"
+        exit 1
+    fi
+    write_kustomize_template
+    check $? 'Failed to write kustomize template file'
+    echo "Wrote $kustomize_fn"
+    ;;
+"apply")
+    kubectl apply -f "$release_fn"
+    ;;
+*)
+    echo 'Unknown subcommand'
     ;;
 esac
