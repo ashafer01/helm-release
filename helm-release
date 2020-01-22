@@ -186,6 +186,7 @@ check_editor() {
         error "EDITOR environment variable ($EDITOR) does not exist or is not executable"
         exit 1
     fi
+    echo "EDITOR $EDITOR seems valid" >&3
 }
 
 check_deps() {
