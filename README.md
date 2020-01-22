@@ -9,9 +9,14 @@ It encourages repeatable Helm deployments by permanently storing
 parameters and ensures the specific chart is unambiguously identified
 for future use with the Helm CLI.
 
-Requires the `jq` tool in addition to bash and coreutils.
+Requires:
+* `helm` Version 3 is preferred but 2 should work
+* `kustomize`
+* `kubectl`
+* `jq`
+* bash and coreutils
 
-*In Development*
+*In Development* No stability guarantees at present.
 
 ## Usage
 
@@ -35,7 +40,8 @@ This will first open a new `release-info` template file in your
 editor. Suggested values for our Gitlab release are shown below:
 
 ```bash
-# Metadata for a single release of a Helm chart
+# This directory is managed by:
+# https://github.com/ashafer01/helm-release/
 
 # Required. Name for this individual release of the chart
 # If you use multiple environments for example it may be desirable to
@@ -57,8 +63,9 @@ CHART="gitlab"
 NAMESPACE="default"
 
 # Optional. Pin the chart version
-# **Leave empty for unpinned/latest**
-VERSION=""
+# The string "latest" and an empty string "" will both leave
+# the version unpinned.
+VERSION="2.6.6"
 ```
 
 After you save this file and close your editor, the repo will be set
@@ -68,24 +75,36 @@ The `values.yaml` from the chart will be copied and opened in your
 editor. Consult the chart's documentation for details on this file.
 
 Once you close the editor, the tool will render all of the chart's
-templates together into one `rendered.yaml`. You can then use
-`kubectl` to apply the file.
+templates together into one single YAML file.
+
+You will then have the option of defining Kustomizations on top of
+this rendered intermediate.
+
+Once all rendering is complete, use the following to
+`kubectl apply` the fully-rendered release to the current cluster
+context:
+
+```bash
+helm-release apply
+```
+
+If you need to specify custom kubectl options, the init output
+will provide the equivalent kubectl command for your
+modification.
 
 **All files created or modified by either the tool or you should be
 committed to git**
 
-## Updating values.yaml
+## Updating values.yaml or kustomization.yaml
 
-Edit values.yaml with your preferred editor. Then:
+Edit the file with your preferred editor. Then:
 
 ```bash
 helm-release refresh
 ```
 
-This will take in the updated values and re-render the chart.
-
-Technically this will render local modifications to the chart copy in
-`.release` as well, but this is *not recommended* at this time.
+This will take in the updated values and kustomizations and
+re-render the chart. Then, `helm-release apply`.
 
 ## Upstream Chart Updates
 
