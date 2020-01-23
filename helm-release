@@ -233,22 +233,15 @@ check_deps() {
         helm_version="$(helm version --short -c | sed 's/^Client: //')"
         helm_major_version="${helm_version:0:2}"
         case "$helm_major_version" in
-        "v2")
-            echo
-            echo 'Warning: helm-release was built for Helm 3.'
-            echo 'Only a small subset of Helm features are used,'
-            echo 'though, and it will probably work fine on 2.'
-            echo 'Many charts claiming lack of Helm 3 support will'
-            echo 'work with helm-release and Helm 3.'
-            echo
-            ;;
         "v3")
             echo 'Helm 3 detected! (this is a good thing)' >&3
             echo >&3
             ;;
         *)
-            error "Helm version $helm_version is unknown/unhandled"
-            error 'Please use Helm 3 if possible; Helm 2 will probably work, too'
+            error "Helm version $helm_version is unsupported"
+            error 'Only Helm 3 is supported at present, however Helm 2'
+            error 'compatibility is possible with demand. Open an'
+            error 'issue on GitHub if this affects you.'
             exit 1
         esac
     fi

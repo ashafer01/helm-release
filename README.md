@@ -9,8 +9,18 @@ It encourages repeatable Helm deployments by permanently storing
 parameters and ensures the specific chart is unambiguously identified
 for future use with the Helm CLI.
 
-Requires:
-* `helm` Version 3 is preferred but 2 should work
+## Installation
+
+Homebrew users:
+
+```
+brew install ashafer01/repo/helm-release
+```
+
+Users of other platforms may clone the repo or even just copy/paste
+the script. The following dependencies will also need to be fulfilled:
+
+* `helm` (version 3)
 * `kustomize`
 * `kubectl`
 * `jq`
@@ -20,10 +30,7 @@ Requires:
 
 ## Usage
 
-First I suggest adding `helm-release` to your PATH. This can be
-accomplished by a variety of means.
-
-Also note that the tool makes use of the `$EDITOR` variable. Be
+Note that the tool makes use of the `$EDITOR` variable. Be
 sure to set it to a text editor you are comfortable with before
 continuing.
 
