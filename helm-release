@@ -22,7 +22,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-version="0.1.0"
+version="0.1.2"
 
 help_heading() {
     echo "helm-release $version -- Simplified Helm-chart deployment tool"
@@ -194,7 +194,7 @@ check_deps() {
     have_helm="yes"
 
     echo -n 'Checking jq: ' >&3
-    which jq >&3 2>&1
+    which jq >&3 2>&3
     if [[ $? -ne 0 ]]; then
         error 'Command jq not found on PATH'
         error '   `brew/apt/yum/... install jq` will usually work'
@@ -202,7 +202,7 @@ check_deps() {
     fi
 
     echo -n 'Checking helm: ' >&3
-    which helm >&3 2>&1
+    which helm >&3 2>&3
     if [[ $? -ne 0 ]]; then
         error 'Command helm not found on PATH'
         error '   `brew install helm` or check:'
@@ -212,7 +212,7 @@ check_deps() {
     fi
 
     echo -n 'Checking kustomize: ' >&3
-    which kustomize >&3 2>&1
+    which kustomize >&3 2>&3
     if [[ $? -ne 0 ]]; then
         error 'Command kustomize not found on PATH'
         error '   `brew install kustomize` or check:'
@@ -221,7 +221,7 @@ check_deps() {
     fi
 
     echo -n 'Checking kubectl: ' >&3
-    which kubectl >&3 2>&1
+    which kubectl >&3 2>&3
     if [[ $? -ne 0 ]]; then
         error 'Command kubectl not found on PATH'
         error '   `brew install kubectl` or check:'
